@@ -11,25 +11,27 @@ use core::{
 
 use cortex_m::{asm, interrupt::Mutex};
 use cortex_m_rt::entry;
-
-use crate::state_machine::StateMachine;
+use fugit::Duration;
 use stm32f4xx_hal::{
     self as hal,
-    gpio::{Edge, Output, PushPull, PB5, PC13},
+    gpio::{EPin, Edge, Output, PushPull, PC13},
     interrupt,
+    pac::{TIM2, USART2},
     prelude::*,
     serial::Serial,
     timer::CounterUs,
 };
 
-const PERIOD: fugit::Duration<u32, 1, 1_000> = fugit::Duration::<u32, 1, 1_000>::millis(1_000);
+use crate::state_machine::StateMachine;
 
-static G_TIM: Mutex<RefCell<Option<CounterUs<hal::pac::TIM2>>>> = Mutex::new(RefCell::new(None));
-static USART: Mutex<RefCell<Option<Serial<hal::pac::USART2>>>> = Mutex::new(RefCell::new(None));
+const PERIOD: Duration<u32, 1, 1_000> = Duration::<u32, 1, 1_000>::millis(500);
+
+static G_TIM: Mutex<RefCell<Option<CounterUs<TIM2>>>> = Mutex::new(RefCell::new(None));
+static USART: Mutex<RefCell<Option<Serial<USART2>>>> = Mutex::new(RefCell::new(None));
 
 static TIM_FLAG: Mutex<Cell<bool>> = Mutex::new(Cell::new(false));
 
-type StateMachineImpl = StateMachine<PB5<Output<PushPull>>, PC13>;
+type StateMachineImpl = StateMachine<3, EPin<Output<PushPull>>, PC13>;
 
 static G_SM: Mutex<RefCell<Option<StateMachineImpl>>> = Mutex::new(RefCell::new(None));
 
@@ -41,6 +43,7 @@ fn main() -> ! {
     let rss = dp.RCC.constrain();
     let clocks = rss.cfgr.sysclk(16.MHz()).pclk1(8.MHz()).freeze();
 
+    // Get GPIO ports
     let gpioa = dp.GPIOA.split();
     let gpiob = dp.GPIOB.split();
     let gpioc = dp.GPIOC.split();
@@ -52,9 +55,14 @@ fn main() -> ! {
         .serial((gpioa.pa2, gpioa.pa3), cfg, &clocks)
         .unwrap();
 
-    // Setup Output LED
-    let mut led = gpiob.pb5.into_push_pull_output();
-    led.set_low();
+    // Setup Output LEDs
+    let mut led1 = gpiob.pb5.into_push_pull_output();
+    led1.set_low();
+    let mut led2 = gpiob.pb4.into_push_pull_output();
+    led2.set_low();
+    let mut led3 = gpiob.pb10.into_push_pull_output();
+    led3.set_low();
+    let leds = [led1.erase(), led2.erase(), led3.erase()];
 
     // Setup Input Button
     let mut btn = gpioc.pc13.into_input().internal_pull_down(true);
@@ -63,7 +71,7 @@ fn main() -> ! {
     let mut syscfg = dp.SYSCFG.constrain();
     let mut exti = dp.EXTI;
     btn.make_interrupt_source(&mut syscfg);
-    btn.trigger_on_edge(&mut exti, Edge::RisingFalling);
+    btn.trigger_on_edge(&mut exti, Edge::Falling);
     btn.enable_interrupt(&mut exti);
     let btn_interrupt = btn.interrupt();
 
@@ -72,9 +80,16 @@ fn main() -> ! {
     timer.start(PERIOD.convert()).unwrap();
     timer.listen(hal::timer::Event::Update);
 
-    let sm = StateMachine::new(led, btn);
+    let sm = StateMachine::new(leds, btn);
 
     writeln!(usart, "Hello, World!").unwrap();
+    writeln!(
+        usart,
+        "Size of StateMachine: {}",
+        core::mem::size_of::<StateMachineImpl>()
+    )
+    .unwrap();
+    writeln!(usart, "Size of USART: {}", core::mem::size_of_val(&USART)).unwrap();
 
     // Store peripherals in static Mutexes
     cortex_m::interrupt::free(|cs| {
@@ -110,7 +125,7 @@ fn main() -> ! {
 
 #[interrupt]
 fn TIM2() {
-    static mut TIM: Option<CounterUs<hal::pac::TIM2>> = None;
+    static mut TIM: Option<CounterUs<TIM2>> = None;
 
     let tim = TIM.get_or_insert_with(|| {
         cortex_m::interrupt::free(|cs| G_TIM.borrow(cs).replace(None).unwrap())
