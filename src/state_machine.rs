@@ -8,9 +8,23 @@ use stm32f4xx_hal::{
 
 use crate::PERIOD;
 
-const TOGGLE_DURATION: Duration<u32, 1, 1_000> = Duration::<u32, 1, 1_000>::millis(500);
-const TICK_COUNT: u8 = (TOGGLE_DURATION.to_millis() / PERIOD.to_millis()) as u8;
+/// How long to wait before incrementing the output counter.
+const COUNT_DURATION: Duration<u32, 1, 1_000> = Duration::<u32, 1, 1_000>::millis(500);
+/// How many timer interrupts to wait before incrementing the output counter.
+///
+/// Set by [`COUNT_DURATION`] / [`PERIOD`]
+const TICK_COUNT: u8 = (COUNT_DURATION.to_millis() / PERIOD.to_millis()) as u8;
 
+/// State machine that controls the output pins.
+///
+/// This state machine increments the output pins every [`COUNT_DURATION`].
+/// If the button is pressed, the state machine pauses.
+///
+/// # Type Parameters
+///
+/// - `BITS`: The number of output pins.
+/// - `PIN`: The type of the output pins.
+/// - `BTN`: The type of the input button pin.
 pub struct StateMachine<const BITS: usize, PIN, BTN> {
     state: State,
     pins: [PIN; BITS],
@@ -20,14 +34,14 @@ pub struct StateMachine<const BITS: usize, PIN, BTN> {
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 enum State {
-    Off,
+    Paused,
     On,
 }
 
 impl Display for State {
     fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
         match self {
-            State::Off => f.write_str("Off"),
+            State::Paused => f.write_str("Paused"),
             State::On => f.write_str("On"),
         }
     }
@@ -41,23 +55,39 @@ where
     const MAX_COUNT: u8 = (1 << BITS) - 1;
     const MAX_TICK: u8 = (Self::MAX_COUNT + 1) * TICK_COUNT - 1;
 
+    /// Creates a new state machine.
+    ///
+    /// # Arguments
+    ///
+    /// * `pins`: The output pins.
+    /// * `btn`: The input button pin.
+    ///
+    /// returns: StateMachine<{ BITS }, PIN, BTN>
     pub fn new(pins: [PIN; BITS], btn: BTN) -> Self {
         Self {
-            state: State::Off,
+            state: State::Paused,
             pins,
             btn,
             cnt: 0,
         }
     }
 
+    /// Ticks the state machine.
+    ///
+    /// This function requires a critical section to ensure no interrupts are fired during the
+    /// processing of the tick.
+    ///
+    /// # Arguments
+    ///
+    /// * `cs`: The critical section from [`cortex_m::interrupt::free`].
     pub fn tick(&mut self, cs: &cortex_m::interrupt::CriticalSection) {
         let btn = self.btn.is_low().unwrap();
 
         // Transitions
         self.state = match self.state {
-            State::Off if !btn => State::On,
-            State::Off => State::Off,
-            State::On if btn => State::Off,
+            State::Paused if !btn => State::On,
+            State::Paused => State::Paused,
+            State::On if btn => State::Paused,
             State::On => {
                 self.cnt = if self.cnt == Self::MAX_TICK {
                     0
@@ -87,8 +117,7 @@ where
 
     fn actions(&mut self) -> Result<(), PIN::Error> {
         match self.state {
-            State::Off => self.set_pins(0),
-            State::On => self.set_pins(self.cnt / TICK_COUNT),
+            State::Paused | State::On => self.set_pins(self.cnt / TICK_COUNT),
         }
     }
 
@@ -108,14 +137,22 @@ where
     BTN: InputPin + ExtiPin,
     BTN::Error: core::fmt::Debug,
 {
+    /// Handles the button interrupt.
+    ///
+    /// This function requires a critical section to ensure no interrupts are fired during the
+    /// handling.
+    ///
+    /// # Arguments
+    ///
+    /// * `_cs`: The critical section from [`cortex_m::interrupt::free`].
     pub fn handle_btn_interrupt(&mut self, _cs: &cortex_m::interrupt::CriticalSection) {
         let btn = self.btn.is_low().unwrap();
 
         self.state = if btn {
-            State::Off
+            State::Paused
         } else {
             match self.state {
-                State::Off => State::On,
+                State::Paused => State::On,
                 s => s,
             }
         };

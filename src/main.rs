@@ -24,15 +24,24 @@ use stm32f4xx_hal::{
 
 use crate::state_machine::StateMachine;
 
-const PERIOD: Duration<u32, 1, 1_000> = Duration::<u32, 1, 1_000>::millis(500);
-
-static G_TIM: Mutex<RefCell<Option<CounterUs<TIM2>>>> = Mutex::new(RefCell::new(None));
-static USART: Mutex<RefCell<Option<Serial<USART2>>>> = Mutex::new(RefCell::new(None));
-
-static TIM_FLAG: Mutex<Cell<bool>> = Mutex::new(Cell::new(false));
-
 type StateMachineImpl = StateMachine<3, EPin<Output<PushPull>>, PC13>;
 
+/// Timer period.
+const PERIOD: Duration<u32, 1, 1_000> = Duration::<u32, 1, 1_000>::millis(500);
+
+// Global resources
+
+/// Timer that ticks every [`PERIOD`].
+///
+/// This can be a `Cell` b/c we are only moving it around, not mutating it.
+static G_TIM: Mutex<Cell<Option<CounterUs<TIM2>>>> = Mutex::new(Cell::new(None));
+/// Flag that is set when the timer ticks.
+///
+/// Make sure to set this to `false` when you are done with it.
+static TIM_FLAG: Mutex<Cell<bool>> = Mutex::new(Cell::new(false));
+/// USART2 serial interface.
+static USART: Mutex<RefCell<Option<Serial<USART2>>>> = Mutex::new(RefCell::new(None));
+/// State machine.
 static G_SM: Mutex<RefCell<Option<StateMachineImpl>>> = Mutex::new(RefCell::new(None));
 
 #[entry]
@@ -83,17 +92,10 @@ fn main() -> ! {
     let sm = StateMachine::new(leds, btn);
 
     writeln!(usart, "Hello, World!").unwrap();
-    writeln!(
-        usart,
-        "Size of StateMachine: {}",
-        core::mem::size_of::<StateMachineImpl>()
-    )
-    .unwrap();
-    writeln!(usart, "Size of USART: {}", core::mem::size_of_val(&USART)).unwrap();
 
     // Store peripherals in static Mutexes
     cortex_m::interrupt::free(|cs| {
-        G_TIM.borrow(cs).replace(Some(timer));
+        G_TIM.borrow(cs).set(Some(timer));
         USART.borrow(cs).replace(Some(usart));
         G_SM.borrow(cs).replace(Some(sm));
     });
@@ -127,20 +129,24 @@ fn main() -> ! {
 fn TIM2() {
     static mut TIM: Option<CounterUs<TIM2>> = None;
 
+    // Move timer out of static Mutex into local static variable
     let tim = TIM.get_or_insert_with(|| {
         cortex_m::interrupt::free(|cs| G_TIM.borrow(cs).replace(None).unwrap())
     });
 
+    // Set flag
     cortex_m::interrupt::free(|cs| {
         TIM_FLAG.borrow(cs).set(true);
     });
 
+    // Clear interrupt flag
     let _ = tim.wait();
 }
 
 #[interrupt]
 fn EXTI15_10() {
     cortex_m::interrupt::free(|cs| {
+        // Print to USART
         USART
             .borrow(cs)
             .borrow_mut()
@@ -148,6 +154,8 @@ fn EXTI15_10() {
             .unwrap()
             .write_str("Button pressed!\r\n")
             .unwrap();
+
+        // Handle button interrupt
         G_SM.borrow(cs)
             .borrow_mut()
             .as_mut()
@@ -158,8 +166,11 @@ fn EXTI15_10() {
 
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
+    // We've panicked!
+    // Disable interrupts, to ensure we are stuck here
     cortex_m::interrupt::disable();
 
+    // Print panic message to USART
     cortex_m::interrupt::free(|cs| {
         if let Some(usart) = USART.borrow(cs).borrow_mut().as_mut() {
             writeln!(usart, "PANIC: {}", info).unwrap();
