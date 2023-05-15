@@ -9,6 +9,7 @@ use core::{
     cell::{Cell, RefCell},
     fmt::Write,
     panic::PanicInfo,
+    sync::atomic::{AtomicBool, Ordering},
 };
 
 use cortex_m::{asm, interrupt::Mutex};
@@ -40,7 +41,7 @@ static G_TIM: Mutex<Cell<Option<CounterUs<TIM2>>>> = Mutex::new(Cell::new(None))
 /// Flag that is set when the timer ticks.
 ///
 /// Make sure to set this to `false` when you are done with it.
-static TIM_FLAG: Mutex<Cell<bool>> = Mutex::new(Cell::new(false));
+static TIM_FLAG: AtomicBool = AtomicBool::new(false);
 /// USART2 serial interface.
 static USART: Mutex<RefCell<Option<Serial<USART2>>>> = Mutex::new(RefCell::new(None));
 /// State machine.
@@ -112,14 +113,14 @@ fn main() -> ! {
 
     loop {
         // Wait for interrupt flag
-        while !cortex_m::interrupt::free(|cs| TIM_FLAG.borrow(cs).get()) {
+        while !TIM_FLAG.load(Ordering::Relaxed) {
             // Put processor to sleep
             asm::wfe();
         }
 
         cortex_m::interrupt::free(|cs| {
             // Clear flag
-            TIM_FLAG.borrow(cs).set(false);
+            TIM_FLAG.store(false, Ordering::Relaxed);
 
             // Tick state machine
             G_SM.borrow(cs)
@@ -142,9 +143,7 @@ fn TIM2() {
     });
 
     // Set flag
-    cortex_m::interrupt::free(|cs| {
-        TIM_FLAG.borrow(cs).set(true);
-    });
+    TIM_FLAG.store(true, Ordering::Relaxed);
 
     // Clear interrupt flag
     let _ = tim.wait();
