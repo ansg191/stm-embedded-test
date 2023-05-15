@@ -13,6 +13,7 @@ const COUNT_DURATION: Duration<u32, 1, 1_000> = Duration::<u32, 1, 1_000>::milli
 /// How many timer interrupts to wait before incrementing the output counter.
 ///
 /// Set by [`COUNT_DURATION`] / [`PERIOD`]
+#[allow(clippy::cast_possible_truncation)]
 const TICK_COUNT: u8 = (COUNT_DURATION.to_millis() / PERIOD.to_millis()) as u8;
 
 /// State machine that controls the output pins.
@@ -41,8 +42,8 @@ enum State {
 impl Display for State {
     fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
         match self {
-            State::Paused => f.write_str("Paused"),
-            State::On => f.write_str("On"),
+            Self::Paused => f.write_str("Paused"),
+            Self::On => f.write_str("On"),
         }
     }
 }
@@ -62,8 +63,8 @@ where
     /// * `pins`: The output pins.
     /// * `btn`: The input button pin.
     ///
-    /// returns: StateMachine<{ BITS }, PIN, BTN>
-    pub fn new(pins: [PIN; BITS], btn: BTN) -> Self {
+    /// returns: `StateMachine<{ BITS }, PIN, BTN>`
+    pub const fn new(pins: [PIN; BITS], btn: BTN) -> Self {
         Self {
             state: State::Paused,
             pins,
@@ -80,8 +81,11 @@ where
     /// # Arguments
     ///
     /// * `cs`: The critical section from [`cortex_m::interrupt::free`].
-    pub fn tick(&mut self, cs: &cortex_m::interrupt::CriticalSection) {
-        let btn = self.btn.is_low().unwrap();
+    pub fn tick(
+        &mut self,
+        cs: &cortex_m::interrupt::CriticalSection,
+    ) -> Result<(), StateMachineError<PIN, BTN>> {
+        let btn = self.btn.is_low().map_err(StateMachineError::ButtonError)?;
 
         // Transitions
         self.state = match self.state {
@@ -99,7 +103,7 @@ where
         };
 
         // Actions
-        self.actions().unwrap();
+        self.actions().map_err(StateMachineError::PinError)?;
 
         // #[cfg(debug_assertions)]
         {
@@ -113,6 +117,8 @@ where
             )
             .unwrap();
         }
+
+        Ok(())
     }
 
     fn actions(&mut self) -> Result<(), PIN::Error> {
@@ -145,20 +151,31 @@ where
     /// # Arguments
     ///
     /// * `_cs`: The critical section from [`cortex_m::interrupt::free`].
-    pub fn handle_btn_interrupt(&mut self, _cs: &cortex_m::interrupt::CriticalSection) {
-        let btn = self.btn.is_low().unwrap();
+    pub fn handle_btn_interrupt(
+        &mut self,
+        _cs: &cortex_m::interrupt::CriticalSection,
+    ) -> Result<(), StateMachineError<PIN, BTN>> {
+        let btn = self.btn.is_low().map_err(StateMachineError::ButtonError)?;
 
         self.state = if btn {
             State::Paused
         } else {
             match self.state {
                 State::Paused => State::On,
-                s => s,
+                s @ State::On => s,
             }
         };
 
-        self.actions().unwrap();
+        self.actions().map_err(StateMachineError::PinError)?;
 
         self.btn.clear_interrupt_pending_bit();
+
+        Ok(())
     }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum StateMachineError<PIN: OutputPin, BTN: InputPin> {
+    PinError(PIN::Error),
+    ButtonError(BTN::Error),
 }

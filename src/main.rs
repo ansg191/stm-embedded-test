@@ -1,3 +1,5 @@
+#![warn(clippy::pedantic, clippy::nursery)]
+#![allow(clippy::module_name_repetitions)]
 #![no_std]
 #![no_main]
 
@@ -53,28 +55,28 @@ fn main() -> ! {
     let clocks = rss.cfgr.sysclk(16.MHz()).pclk1(8.MHz()).freeze();
 
     // Get GPIO ports
-    let gpioa = dp.GPIOA.split();
-    let gpiob = dp.GPIOB.split();
-    let gpioc = dp.GPIOC.split();
+    let gpio_a = dp.GPIOA.split();
+    let gpio_b = dp.GPIOB.split();
+    let gpio_c = dp.GPIOC.split();
 
     // Setup USART
     let cfg = hal::serial::Config::default().baudrate(57600.bps());
     let mut usart = dp
         .USART2
-        .serial((gpioa.pa2, gpioa.pa3), cfg, &clocks)
+        .serial((gpio_a.pa2, gpio_a.pa3), cfg, &clocks)
         .unwrap();
 
     // Setup Output LEDs
-    let mut led1 = gpiob.pb5.into_push_pull_output();
-    led1.set_low();
-    let mut led2 = gpiob.pb4.into_push_pull_output();
-    led2.set_low();
-    let mut led3 = gpiob.pb10.into_push_pull_output();
-    led3.set_low();
-    let leds = [led1.erase(), led2.erase(), led3.erase()];
+    let mut l1 = gpio_b.pb5.into_push_pull_output();
+    l1.set_low();
+    let mut l2 = gpio_b.pb4.into_push_pull_output();
+    l2.set_low();
+    let mut l3 = gpio_b.pb10.into_push_pull_output();
+    l3.set_low();
+    let leds = [l1.erase(), l2.erase(), l3.erase()];
 
     // Setup Input Button
-    let mut btn = gpioc.pc13.into_input().internal_pull_down(true);
+    let mut btn = gpio_c.pc13.into_input().internal_pull_down(true);
 
     // Setup Button interrupt
     let mut syscfg = dp.SYSCFG.constrain();
@@ -120,7 +122,12 @@ fn main() -> ! {
             TIM_FLAG.borrow(cs).set(false);
 
             // Tick state machine
-            G_SM.borrow(cs).borrow_mut().as_mut().unwrap().tick(cs);
+            G_SM.borrow(cs)
+                .borrow_mut()
+                .as_mut()
+                .unwrap()
+                .tick(cs)
+                .unwrap();
         });
     }
 }
@@ -160,7 +167,8 @@ fn EXTI15_10() {
             .borrow_mut()
             .as_mut()
             .unwrap()
-            .handle_btn_interrupt(cs);
+            .handle_btn_interrupt(cs)
+            .unwrap();
     });
 }
 
